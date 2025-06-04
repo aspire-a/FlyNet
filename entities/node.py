@@ -240,6 +240,14 @@ class Node:
     # -------------------question 2------------------#
     def _enqueue_tx(self, pkt):
         """Insert *pkt* into the global priority heap with push-out."""
+
+        # Compute this node’s MB/s capacity:
+        capacity_mb_per_s = self.compute_rate / 8.0
+        if pkt.size_MB > capacity_mb_per_s:
+            # count it as “dropped_insufficient_capacity” and return immediately
+            self.simulator.metrics.count("dropped_insufficient_capacity")
+            return
+
         prio = getattr(pkt, "priority", 0)
         entry = (prio, time.monotonic_ns(), pkt)
         q = self._tx_pq
@@ -460,6 +468,19 @@ class Node:
                 continue
 
             _, _, packet = self.transmitting_queue.get()
+
+            # ==== TASK 2 LOGGING START (queue‐length & per‐priority delay) ====
+            self.simulator.metrics.record_queue_length(
+                self.identifier,
+                self.env.now,
+                self.transmitting_queue.qsize()
+            )
+            # delay = time now minus when packet was first created:
+            self.simulator.metrics.record_delay(
+                packet.priority,
+                self.env.now - packet.creation_time
+            )
+            # ==== TASK 2 LOGGING END ====
 
             # lifetime & retry guards
             if self.env.now >= packet.creation_time + packet.deadline:
