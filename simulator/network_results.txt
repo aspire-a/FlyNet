@@ -1,1 +1,12 @@
 
+06-19-55_04-06-2025
+Total Arrived is: 110
+Totally sent: 176 data packets
+Packet delivery ratio is: 62.5%
+Average end-to-end delay is: 6.413463636363637 ms
+Routing load is: 3.6363636363636362
+Average throughput is: 1520.896892722419 Kbps
+Average hop count is: 1.309090909090909
+Collision num is: 10
+Average MAC delay is: 14.270846560846563 ms
+--------------------------------------------

@@ -51,6 +51,45 @@ class Metrics:
 
         self.collision_num = 0
 
+
+        #--------added for priority queue--------
+        self._dynamic = defaultdict(int)
+
+
+
+    #--------same added for priority queue--------
+
+    def count(self, key: str, delta: int = 1) -> int:
+        """
+        Increase metric *key* by *delta* (default = 1) and return
+        the updated value.
+
+        * If *key* is an explicit attribute of Metrics
+          (`collision_num`, `datapacket_generated_num`, …) we update
+          that attribute so legacy code keeps working.
+        * Otherwise we store the value in an internal dict that holds
+          all ad-hoc counters created at run-time.
+        """
+        if hasattr(self, key):
+            new_val = getattr(self, key) + delta
+            setattr(self, key, new_val)
+            return new_val
+
+        self._dynamic[key] += delta
+        return self._dynamic[key]
+
+    # Optional convenience getter (handy for tests / logging)
+    def value(self, key: str, default: int = 0) -> int:
+        if hasattr(self, key):
+            return getattr(self, key)
+        return self._dynamic.get(key, default)
+
+    #------------------end------------
+
+
+
+
+
     def print_metrics(self):
         # calculate the average end-to-end delay
         for key in self.deliver_time_dict.keys():

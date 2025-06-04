@@ -4,6 +4,7 @@ import numpy as np
 import random
 import math
 import queue
+
 from entities.packet import DataPacket
 from routing.dsdv.dsdv import Dsdv
 from routing.gpsr.gpsr import Gpsr
@@ -18,17 +19,15 @@ from mobility.random_walk_3d import RandomWalk3D
 from mobility.random_waypoint_3d import RandomWaypoint3D
 from topology.virtual_force.vf_motion_control import VfMotionController
 from energy.energy_model import EnergyModel
-from utils import config
 from utils.util_function import has_intersection
 from phy.large_scale_fading import sinr_calculator
 
-
-#-------------question 2------------------#
+# -------------question 2------------------#
+import heapq, time
 from utils import config
-import queue as pyqueue
-#-------------question 2 end-----------------#
+from queue import PriorityQueue
 
-
+# -------------question 2 end-----------------#
 
 
 # config logging
@@ -40,9 +39,65 @@ logging.basicConfig(filename='running_log.log',
 
 GLOBAL_DATA_PACKET_ID = 0
 
+"""
+Adapter we use in order to change the FIFO queue to priority there were too many files to change it by hand
+"""
+
+
+class _CompatPQ(PriorityQueue):
+    """
+    Works like `queue.PriorityQueue`, but if someone tries to insert a
+    *raw packet object* we transparently wrap it into a sortable tuple
+        (priority, monotonic_time_ns, pkt)
+    so `heapq` never needs to compare two arbitrary packets.
+    """
+
+    # ---------- private helper ---------------------------------------------
+    @staticmethod
+    def _wrap(item):
+        if isinstance(item, tuple) and len(item) == 3:
+            # already in (prio, ts, pkt) form
+            return item
+        prio = getattr(item, "priority", 0)  # control packets → 0
+        return (prio, time.monotonic_ns(), item)  # unique 2nd field
+
+    # ---------- public API --------------------------------------------------
+    def put(self, item, block=True, timeout=None):
+        super().put(self._wrap(item), block, timeout)
+
+    # nothing special for .get(): callers receive the 3-tuple and can unpack
+
+
+class _TxAdapter:
+    """
+    Legacy wrapper exposed as `drone.transmitting_queue`.  Older code still
+    calls .put(pkt) / .empty() / .qsize(); internally we forward to the new
+    global heap through the owning Node.
+    """
+    __slots__ = ("_owner",)
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    # --------------------------------------------------------------------- #
+    # FIFO-style interface expected by the old routing modules
+    # --------------------------------------------------------------------- #
+    def put(self, pkt):  # enqueue
+        self._owner._enqueue_tx(pkt)
+
+    def empty(self):
+        return self._owner._tx_pq.empty()
+
+    def qsize(self):
+        return self._owner._tx_pq.qsize()
+
+    def get(self):  # added so legacy code can pop
+        return self._owner._tx_pq.get()
+
 
 class Node:
-    transmitting_queue = queue.Queue()
+    # transmitting_queue = queue.Queue() Removed because we changedthe que structure to priortiy
+    # transmitting_queue = PriorityQueue()
     """
     Node implementation
 
@@ -87,7 +142,6 @@ class Node:
 
     """
 
-    
     """
     The main logic for priority queuing and task offloading is implemented here, mainly in the generate datapacket and 
     feedpacket functions
@@ -124,17 +178,19 @@ class Node:
 
         self.inbox = inbox
 
-        #-----------------question 2------------------#
-        self.tx_queue     = pyqueue.PriorityQueue()      # items = (prio, t_arr, pkt)
-        self.max_queue_sz = config.BUFFER_SIZES[0]       # default, overwritten by runner
-        #-----------------question 2 end--------------#
+        # -----------------question 2------------------#
+        self.tx_capacity = config.BUFFER_SIZES[0]  # default, overwritten by runner
+        self._tx_pq = _CompatPQ()
+        self.transmitting_queue = _TxAdapter(self)
 
-        #-----------------question 3------------------#
-        #compute queue
-        self.compute_rate   = config.SERVICE_RATE        # all equal; can randomise
-        self.cpu            = simpy.Resource(env, capacity=1)
-        self.arrivals_ewma  = 0.0                        # for ρ̂
-        self.alpha_ewma     = 0.02
+        # -----------------question 2 end--------------#
+
+        # -----------------question 3------------------#
+        # compute queue
+        self.compute_rate = config.SERVICE_RATE  # all equal; can randomise
+        self.cpu = simpy.Resource(env, capacity=1)
+        self.arrivals_ewma = 0.0  # for ρ
+        self.alpha_ewma = 0.02
         # -----------------question 3 end------------------#
 
         self.buffer = simpy.Resource(env, capacity=1)
@@ -147,7 +203,7 @@ class Node:
         self.mac_process_finish = dict()
         self.mac_process_count = 0
         self.enable_blocking = 1
-        self.sensor_drone_flag=sensor_drone_flag
+        self.sensor_drone_flag = sensor_drone_flag
 
         """
         You need to set the condition in the if-statement below manually depending on how many sensor nodes and drones you want.
@@ -157,25 +213,21 @@ class Node:
         a mobility model (self.mobility_model = GaussMarkov3D(self)))
         """
 
-        if(self.sensor_drone_flag==0): # sensor node features, set the value here based on your implementation
+        if (self.sensor_drone_flag == 0):  # sensor node features, set the value here based on your implementation
 
-            self.routing_protocol = Gpsr(self.simulator, self) # You can keep the routing protocol as is
+            self.routing_protocol = Gpsr(self.simulator, self)  # You can keep the routing protocol as is
             self.energy_model = EnergyModel()
             self.residual_energy = config.INITIAL_ENERGY
             self.sleep = False
 
-            self.env.process(self.generate_data_packet()) # sensors generate and route packets to drones
+            self.env.process(self.generate_data_packet())  # sensors generate and route packets to drones
             self.env.process(self.feed_packet())
             self.env.process(self.energy_monitor())
             self.env.process(self.receive())
 
-            #-------------question 2------------------#
-            self.env.process(self._tx_queue_worker())
-            #-------------question 2 end-----------------#
 
-
-        else: # drone features
-            self.routing_protocol = Gpsr(self.simulator, self) # You can keep the routing protocol as is
+        else:  # drone features
+            self.routing_protocol = Gpsr(self.simulator, self)  # You can keep the routing protocol as is
             self.mobility_model = GaussMarkov3D(self)
             self.energy_model = EnergyModel()
             self.residual_energy = config.INITIAL_ENERGY
@@ -185,47 +237,28 @@ class Node:
             self.env.process(self.energy_monitor())
             self.env.process(self.receive())
 
-
-    #-------------------question 2------------------#
+    # -------------------question 2------------------#
     def _enqueue_tx(self, pkt):
-        """Insert pkt into self.tx_queue respecting push-out rule."""
-        now = self.env.now
-        prio_tuple = (pkt.priority, now, pkt)
+        """Insert *pkt* into the global priority heap with push-out."""
+        prio = getattr(pkt, "priority", 0)
+        entry = (prio, time.monotonic_ns(), pkt)
+        q = self._tx_pq
 
-        if self.tx_queue.qsize() < self.max_queue_sz:  # space free
-            self.tx_queue.put(prio_tuple)
+        if q.qsize() < self.tx_capacity:  # buffer not full  # buffer not full
+            q.put(entry)
             return
 
-        # push-out: if queue full and *this* pkt is higher priority
-        worst = self.tx_queue.queue[-1]  # queue kept in sorted order (min-heap)
-        if pkt.priority < worst[0]:  # 0 < 1 < 2
-            self.tx_queue.get_nowait()  # drop lowest-prio
-            self.tx_queue.put(prio_tuple)
-            self.simulator.metrics.count('dropped_pushout')
-        else:  # drop incoming pkt
-            self.simulator.metrics.count('dropped_full')
+        # push-out policy (keep heap invariant):
+        worst_idx = max(range(len(q.queue)), key=lambda i: q.queue[i][0])
+        worst = q.queue[worst_idx]
+        if prio < worst[0]:
+            q.queue[worst_idx] = entry
+            heapq.heapify(q.queue)
+            self.simulator.metrics.count("dropped_pushout")
+        else:
+            self.simulator.metrics.count("dropped_full")
 
-    def _tx_queue_worker(self):
-        """
-        Continuously pull from tx_queue and serve packet via buffer (link),
-        then dispatch to compute queue or offload decision.
-        """
-        while True:
-            if self.tx_queue.empty():
-                yield self.env.timeout(1e-6)  # 1 µs idle wait
-                continue
-
-            _, _, pkt = self.tx_queue.get()
-            with self.buffer.request() as req:
-                yield req
-
-                # simulate transmission time (size_MB / link_rate)
-                yield self.env.timeout(pkt.size_MB / config.SERVICE_RATE)
-
-                # hand to next stage: compute queue or offloading
-                self._handle_compute(pkt)
-
-    #--------------------question 2 end ----------------#
+    # --------------------question 2 end ----------------#
 
     # --------------------question 3 -------------------#
 
@@ -235,7 +268,7 @@ class Node:
             Off-load if queue length > L_TH or utilisation ρ̂ > 0.85
         """
         # update EWMA arrival rate
-        self.arrivals_ewma = ((1-self.alpha_ewma) * self.arrivals_ewma
+        self.arrivals_ewma = ((1 - self.alpha_ewma) * self.arrivals_ewma
                               + self.alpha_ewma)
         rho_hat = self.arrivals_ewma / self.compute_rate
         if (len(self.cpu.queue) > config.L_TH) or (rho_hat > config.RHO_MAX):
@@ -259,12 +292,10 @@ class Node:
             # no better node; drop
             self.simulator.metrics.count('dropped_offload_fail')
             return
-        target._enqueue_tx(pkt)         # remote queue
+        target._enqueue_tx(pkt)  # remote queue
         self.simulator.metrics.count('offloaded')
 
-
     # --------------------question 3 end ----------------#
-
 
     def generate_data_packet(self, traffic_pattern='Poisson'):
         """
@@ -282,7 +313,7 @@ class Node:
                 if traffic_pattern == 'Uniform':
                     # the drone generates a data packet every 0.5s with jitter
                     yield self.env.timeout(random.randint(5000000, 5050000))
-                    #yield self.env.timeout(random.randint(500000, 505000))
+                    # yield self.env.timeout(random.randint(500000, 505000))
                 elif traffic_pattern == 'Poisson':
                     """
                     the process of generating data packets by nodes follows Poisson distribution, thus the generation 
@@ -300,7 +331,7 @@ class Node:
                     drone
                     for drone in self.simulator.drones
                     if drone.sensor_drone_flag == 1
-                    and drone.identifier != self.identifier
+                       and drone.identifier != self.identifier
                 ]
                 destination = random.choice(drone_candidates)
                 dst_id = destination.identifier
@@ -316,22 +347,18 @@ class Node:
                 pkd.transmission_mode = 0  # the default transmission mode of data packet is "unicast" (0)
                 self.simulator.metrics.datapacket_generated_num += 1
 
-                #-------------------question 2------------------#
+                # -------------------question 2------------------#
                 self._enqueue_tx(pkd)
                 # Node.transmitting_queue.put(pkd)
-                continue        # skip legacy immediate-send logic we dont need the below
-                #-------------------question 2 end-----------------#
+                # -------------------question 2 end-----------------#
 
                 # noinspection PyUnreachableCode
-                logging.info('------> Sensor: %s generates a data packet (id: %s, dst: %s) at: %s, qsize is: %s',
-                             self.identifier, pkd.packet_id, destination.identifier, self.env.now,
-                             Node.transmitting_queue.qsize())
+                logging.info('------> Sensor: %s generates a data packet (id: %s, dst: %s) at: %s',
+                             self.identifier, pkd.packet_id, destination.identifier, self.env.now)
 
                 pkd.waiting_start_time = self.env.now
 
-                if Node.transmitting_queue.qsize() < self.max_queue_size:
-                    
-                    Node.transmitting_queue.put(pkd)
+
             else:  # cannot generate packets if "my_drone" is in sleep state
                 break
 
@@ -354,63 +381,104 @@ class Node:
 
         return flag
 
+    """
+    feed_packet implementation for the FIFO queue
+    """
+    # def feed_packet(self):
+    #     """
+    #     It should be noted that this function is designed for those packets which need to compete for wireless channel
+    #
+    #     Firstly, all packets received or generated will be put into the "transmitting_queue", every very short
+    #     time, the drone will read the packet in the head of the "transmitting_queue". Then the drone will check
+    #     if the packet is expired (exceed its maximum lifetime in the network), check the type of packet:
+    #     1) data packet: check if the data packet exceeds its maximum re-transmission attempts. If the above inspection
+    #        passes, routing protocol is executed to determine the next hop drone. If next hop is found, then this data
+    #        packet is ready to transmit, otherwise, it will be put into the "waiting_queue".
+    #     2) control packet: no need to determine next hop, so it will directly start waiting for buffer
+    #
+    #     :return: none
+    #     """
+    #
+    #
+    #
+    #     while True:
+    #         if not self.sleep:  # if drone still has enough energy to relay packets
+    #
+    #             yield self.env.timeout(10)  # for speed up the simulation
+    #
+    #             if not self.blocking():
+    #
+    #
+    #
+    #                 if not Node.transmitting_queue.empty():
+    #
+    #                     packet = Node.transmitting_queue.get()  # get the packet at the head of the queue
+    #
+    #                     if self.env.now < packet.creation_time + packet.deadline:  # this packet has not expired
+    #                         if isinstance(packet, DataPacket):
+    #                             if packet.number_retransmission_attempt[self.identifier] < config.MAX_RETRANSMISSION_ATTEMPT:
+    #                                 #print("here noww\n")
+    #                                 # it should be noted that "final_packet" may be the data packet itself or a control
+    #                                 # packet, depending on whether the routing protocol can find an appropriate next hop
+    #                                 has_route, final_packet, enquire = self.routing_protocol.next_hop_selection(packet)
+    #
+    #                                 if has_route:
+    #                                     logging.info('Sensor: %s obtain the next hop: %s of data packet (id: %s)',
+    #                                                  self.identifier, packet.next_hop_id, packet.packet_id)
+    #
+    #                                     # in this case, the "final_packet" is actually the data packet
+    #                                     yield self.env.process(self.packet_coming(final_packet))
+    #                                 else:
+    #                                     self.waiting_list.append(packet)
+    #
+    #                                     if enquire:
+    #                                         # in this case, the "final_packet" is actually the control packet
+    #                                         yield self.env.process(self.packet_coming(final_packet))
+    #
+    #                         else:  # control packet but not ack
+    #                             yield self.env.process(self.packet_coming(packet))
+    #                     else:
+    #                         pass  # means dropping this data packet for expiration
+    #         else:  # this drone runs out of energy
+    #             break  # it is important to break the while loop
+
+    """
+    feed_packet implementation for the priority queue
+    """
+
     def feed_packet(self):
         """
-        It should be noted that this function is designed for those packets which need to compete for wireless channel
-
-        Firstly, all packets received or generated will be put into the "transmitting_queue", every very short
-        time, the drone will read the packet in the head of the "transmitting_queue". Then the drone will check
-        if the packet is expired (exceed its maximum lifetime in the network), check the type of packet:
-        1) data packet: check if the data packet exceeds its maximum re-transmission attempts. If the above inspection
-           passes, routing protocol is executed to determine the next hop drone. If next hop is found, then this data
-           packet is ready to transmit, otherwise, it will be put into the "waiting_queue".
-        2) control packet: no need to determine next hop, so it will directly start waiting for buffer
-
-        :return: none
+        Pull from this UAV’s priority queue, run routing, then go to MAC.
         """
-
-        
-
         while True:
-            if not self.sleep:  # if drone still has enough energy to relay packets
-                
-                yield self.env.timeout(10)  # for speed up the simulation
+            if self.sleep:
+                break
 
-                if not self.blocking():
+            yield self.env.timeout(10)  # 10 µs polling gap
 
-                    
-                    
-                    if not Node.transmitting_queue.empty():
-                        
-                        packet = Node.transmitting_queue.get()  # get the packet at the head of the queue
+            if self.blocking() or self.transmitting_queue.empty():
+                continue
 
-                        if self.env.now < packet.creation_time + packet.deadline:  # this packet has not expired
-                            if isinstance(packet, DataPacket):
-                                if packet.number_retransmission_attempt[self.identifier] < config.MAX_RETRANSMISSION_ATTEMPT:
-                                    #print("here noww\n")
-                                    # it should be noted that "final_packet" may be the data packet itself or a control
-                                    # packet, depending on whether the routing protocol can find an appropriate next hop
-                                    has_route, final_packet, enquire = self.routing_protocol.next_hop_selection(packet)
+            _, _, packet = self.transmitting_queue.get()
 
-                                    if has_route:
-                                        logging.info('Sensor: %s obtain the next hop: %s of data packet (id: %s)',
-                                                     self.identifier, packet.next_hop_id, packet.packet_id)
+            # lifetime & retry guards
+            if self.env.now >= packet.creation_time + packet.deadline:
+                continue
+            if isinstance(packet, DataPacket) and \
+                    packet.number_retransmission_attempt[self.identifier] >= config.MAX_RETRANSMISSION_ATTEMPT:
+                continue
 
-                                        # in this case, the "final_packet" is actually the data packet
-                                        yield self.env.process(self.packet_coming(final_packet))
-                                    else:
-                                        self.waiting_list.append(packet)
-
-                                        if enquire:
-                                            # in this case, the "final_packet" is actually the control packet
-                                            yield self.env.process(self.packet_coming(final_packet))
-
-                            else:  # control packet but not ack
-                                yield self.env.process(self.packet_coming(packet))
-                        else:
-                            pass  # means dropping this data packet for expiration
-            else:  # this drone runs out of energy
-                break  # it is important to break the while loop
+            # ---------------- routing decision ----------------
+            if isinstance(packet, DataPacket):
+                has_route, final_pkt, enquire = self.routing_protocol.next_hop_selection(packet)
+                if has_route:
+                    yield self.env.process(self.packet_coming(final_pkt))
+                else:
+                    self.waiting_list.append(packet)
+                    if enquire:
+                        yield self.env.process(self.packet_coming(final_pkt))
+            else:  # control packet
+                yield self.env.process(self.packet_coming(packet))
 
     def packet_coming(self, pkd):
         """
@@ -458,24 +526,41 @@ class Node:
             yield self.env.timeout(1 * 1e5)  # report residual energy every 0.1s
             if self.residual_energy <= config.ENERGY_THRESHOLD:
                 self.sleep = True
-                logging.info('UAV: %s run out of energy at: %s',self.identifier, self.env.now)
+                logging.info('UAV: %s run out of energy at: %s', self.identifier, self.env.now)
                 print('UAV: ', self.identifier, ' run out of energy at: ', self.env.now)
 
+    """
+    remove_from_queue implementation for the FIFO
+    """
+    # def remove_from_queue(self, data_pkd):
+    #     """
+    #     After receiving the ack packet, drone should remove the data packet that has been acked from its queue
+    #     :param data_pkd: the acked data packet
+    #     :return: none
+    #     """
+    #     temp_queue = queue.Queue()
+    #
+    #     while not Node.transmitting_queue.empty():
+    #         pkd_entry = Node.transmitting_queue.get()
+    #         if pkd_entry != data_pkd:
+    #             temp_queue.put(pkd_entry)
+    #
+    #     while not temp_queue.empty():
+    #         Node.transmitting_queue.put(temp_queue.get())
+
+    """
+    remove_from_queue implementation for the priority queue
+    """
+
     def remove_from_queue(self, data_pkd):
-        """
-        After receiving the ack packet, drone should remove the data packet that has been acked from its queue
-        :param data_pkd: the acked data packet
-        :return: none
-        """
-        temp_queue = queue.Queue()
-
-        while not Node.transmitting_queue.empty():
-            pkd_entry = Node.transmitting_queue.get()
-            if pkd_entry != data_pkd:
-                temp_queue.put(pkd_entry)
-
-        while not temp_queue.empty():
-            Node.transmitting_queue.put(temp_queue.get())
+        """Drop *data_pkd* from this UAV’s queue if still queued."""
+        q = self._tx_pq.queue
+        for i, (_, _, pkt) in enumerate(q):
+            if pkt is data_pkd:
+                q[i] = q[-1];
+                q.pop()
+                heapq.heapify(q)
+                break
 
     def receive(self):
         """
