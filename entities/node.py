@@ -187,7 +187,20 @@ class Node:
 
         # -----------------question 3------------------#
         # compute queue
-        self.compute_rate = config.SERVICE_RATE  # all equal; can randomise
+
+        # ─── TASK 1: sample UAV compute capacity (jobs/s) ───
+        self.compute_rate = random.uniform(
+            config.UAV_COMPUTE_MIN_RATE,
+            config.UAV_COMPUTE_MAX_RATE
+        )
+
+        self.simulator.metrics.record_uav_capacity(
+            self.identifier, self.compute_rate
+        )
+
+        self.arrival_rate = config.DEFAULT_ARRIVAL_RATE
+
+
         self.cpu = simpy.Resource(env, capacity=1)
         self.arrivals_ewma = 0.0  # for ρ
         self.alpha_ewma = 0.02
@@ -241,12 +254,14 @@ class Node:
     def _enqueue_tx(self, pkt):
         """Insert *pkt* into the global priority heap with push-out."""
 
-        # Compute this node’s MB/s capacity:
-        capacity_mb_per_s = self.compute_rate / 8.0
-        if pkt.size_MB > capacity_mb_per_s:
-            # count it as “dropped_insufficient_capacity” and return immediately
-            self.simulator.metrics.count("dropped_insufficient_capacity")
-            return
+        # —— TASK 2: only drop “data” packets based on size; control packets skip this ——
+        if hasattr(pkt, "size_MB"):
+            # Compute this node’s MB/s capacity:
+            capacity_mb_per_s = self.compute_rate / 8.0
+            if pkt.size_MB > capacity_mb_per_s:
+                # count it as “dropped_insufficient_capacity” and return immediately
+                self.simulator.metrics.count("dropped_insufficient_capacity")
+                return
 
         prio = getattr(pkt, "priority", 0)
         entry = (prio, time.monotonic_ns(), pkt)
@@ -328,7 +343,8 @@ class Node:
                     interval of data packets follows exponential distribution
                     """
 
-                    rate = 2  # on average, how many packets are generated in 1s
+                    # ─── TASK 1: use per-node Poisson λ = self.arrival_rate ───
+                    rate = self.arrival_rate
                     yield self.env.timeout(round(random.expovariate(rate) * 1e6))
 
                 GLOBAL_DATA_PACKET_ID += 1  # data packet id
@@ -476,10 +492,11 @@ class Node:
                 self.transmitting_queue.qsize()
             )
             # delay = time now minus when packet was first created:
-            self.simulator.metrics.record_delay(
-                packet.priority,
-                self.env.now - packet.creation_time
-            )
+            if hasattr(packet, "priority") and hasattr(packet, "creation_time"):
+                self.simulator.metrics.record_delay(
+                    packet.priority,
+                    self.env.now - packet.creation_time
+                )
             # ==== TASK 2 LOGGING END ====
 
             # lifetime & retry guards

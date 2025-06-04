@@ -83,6 +83,9 @@ class Simulator:
 
         self.metrics.print_metrics()
 
+        # ─── TASK 1: generate & save all basic‐stats plots (if enabled) ───
+        self.metrics.plot_basic_stats()
+
         """
 
         You can use these lines instead to print the network metrics every n seconds instead of the end only. 

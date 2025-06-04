@@ -10,3 +10,14 @@ Average hop count is: 1.309090909090909
 Collision num is: 10
 Average MAC delay is: 14.270846560846563 ms
 --------------------------------------------
+08-12-25_04-06-2025
+Total Arrived is: 115
+Totally sent: 175 data packets
+Packet delivery ratio is: 65.71428571428571%
+Average end-to-end delay is: 7.223626086956522 ms
+Routing load is: 3.4782608695652173
+Average throughput is: 1427.5458122112536 Kbps
+Average hop count is: 1.4608695652173913
+Collision num is: 30
+Average MAC delay is: 7.764562130177515 ms
+--------------------------------------------

@@ -1,29 +1,37 @@
 import logging
 from utils.ieee_802_11 import IEEE_802_11
 
-IEEE_802_11 = IEEE_802_11().b #You can choose a different version or leave it as it is.
+IEEE_802_11 = IEEE_802_11().b  # You can choose a different version or leave it as it is.
 
-
-#--------------------question 1------------------#
+# --------------------question 1------------------#
 # traffic & service
-ARRIVAL_RATES = [2, 4, 6, 8]        # λ values (pkt s⁻¹)
-SERVICE_RATE  = 8                   # μ (jobs s⁻¹)
+ARRIVAL_RATES = [2, 4, 6, 8]  # λ values (pkt s⁻¹)
+DEFAULT_ARRIVAL_RATE = ARRIVAL_RATES[0]
+
+SERVICE_RATE = 8  # μ (jobs s⁻¹)
+UAV_COMPUTE_MIN_RATE =8
+UAV_COMPUTE_MAX_RATE = 12
 
 # categorical probabilities
-PKT_TYPE_PMF  = ['text', 'image', 'video']
+PKT_TYPE_PMF = ['text', 'image', 'video']
 PKT_TYPE_PROB = [0.60, 0.30, 0.10]
 
 # queue sizes for push-out
-BUFFER_SIZES  = [5, 10, float('inf')]
+BUFFER_SIZES = [5, 10, float('inf')]
 
 # drop / off-load thresholds
-L_TH          = 5
-RHO_MAX       = 0.85
+L_TH = 5
+RHO_MAX = 0.85
 
 # priority map (lower number = higher priority for PriorityQueue)
-PRIORITY_MAP  = {'video': 0, 'image': 1, 'text': 2}
+PRIORITY_MAP = {'video': 0, 'image': 1, 'text': 2}
 
-#---------------------- question 1 end ---------------------#
+# ---------------------- question 1 end ---------------------#
+
+# ─── TASK 1: flag to gate basic-statistics plotting ───
+ENABLE_STATS = True
+# ─── end Task 1 ───
+
 
 
 
@@ -91,7 +99,7 @@ GL_ID_CHIRP_PACKET = 50000
 
 # ------------------ physical layer parameters ------------------- # # No need to change
 BIT_RATE = IEEE_802_11['bit_rate']
-BIT_TRANSMISSION_TIME = 1/BIT_RATE * 1e6
+BIT_TRANSMISSION_TIME = 1 / BIT_RATE * 1e6
 BANDWIDTH = IEEE_802_11['bandwidth']
 SENSING_RANGE = 600  # in meter, defines the area where a sending node can disturb a transmission from a third node
 
@@ -102,4 +110,4 @@ DIFS_DURATION = SIFS_DURATION + (2 * SLOT_DURATION)
 CW_MIN = 31
 ACK_TIMEOUT = 0.1 * 1e6  # maximum waiting time for ACK (0.1 s)
 MAX_RETRANSMISSION_ATTEMPT = 5
-MAX_QUEUE_SIZE=1000
+MAX_QUEUE_SIZE = 1000
