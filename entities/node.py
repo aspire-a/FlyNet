@@ -4,6 +4,22 @@ import numpy as np
 import random
 import math
 import queue
+
+
+class PacketPriorityQueue(queue.PriorityQueue):
+    """Priority queue storing packets with optional priority."""
+
+    def __init__(self):
+        super().__init__()
+        self._counter = 0
+
+    def put(self, item, priority=0, block=True, timeout=None):
+        self._counter += 1
+        super().put((priority, self._counter, item), block=block, timeout=timeout)
+
+    def get(self, block=True, timeout=None):
+        priority, _, item = super().get(block=block, timeout=timeout)
+        return priority, item
 from entities.packet import DataPacket
 from routing.dsdv.dsdv import Dsdv
 from routing.gpsr.gpsr import Gpsr
@@ -33,7 +49,6 @@ GLOBAL_DATA_PACKET_ID = 0
 
 
 class Node:
-    transmitting_queue = queue.Queue()
     """
     Node implementation
 
@@ -117,6 +132,8 @@ class Node:
 
         self.buffer = simpy.Resource(env, capacity=1)
         self.max_queue_size = config.MAX_QUEUE_SIZE
+
+        self.transmitting_queue = PacketPriorityQueue()
 
         self.waiting_list = []
 
@@ -210,13 +227,13 @@ class Node:
 
                 logging.info('------> Sensor: %s generates a data packet (id: %s, dst: %s) at: %s, qsize is: %s',
                              self.identifier, pkd.packet_id, destination.identifier, self.env.now,
-                             Node.transmitting_queue.qsize())
+                             self.transmitting_queue.qsize())
 
                 pkd.waiting_start_time = self.env.now
 
-                if Node.transmitting_queue.qsize() < self.max_queue_size:
-                    
-                    Node.transmitting_queue.put(pkd)
+                if self.transmitting_queue.qsize() < self.max_queue_size:
+
+                    self.transmitting_queue.put(pkd)
             else:  # cannot generate packets if "my_drone" is in sleep state
                 break
 
@@ -265,9 +282,9 @@ class Node:
 
                     
                     
-                    if not Node.transmitting_queue.empty():
-                        
-                        packet = Node.transmitting_queue.get()  # get the packet at the head of the queue
+                    if not self.transmitting_queue.empty():
+
+                        _, packet = self.transmitting_queue.get()  # get the packet at the head of the queue
 
                         if self.env.now < packet.creation_time + packet.deadline:  # this packet has not expired
                             if isinstance(packet, DataPacket):
@@ -352,15 +369,16 @@ class Node:
         :param data_pkd: the acked data packet
         :return: none
         """
-        temp_queue = queue.Queue()
+        temp_queue = PacketPriorityQueue()
 
-        while not Node.transmitting_queue.empty():
-            pkd_entry = Node.transmitting_queue.get()
+        while not self.transmitting_queue.empty():
+            pri, pkd_entry = self.transmitting_queue.get()
             if pkd_entry != data_pkd:
-                temp_queue.put(pkd_entry)
+                temp_queue.put(pkd_entry, priority=pri)
 
         while not temp_queue.empty():
-            Node.transmitting_queue.put(temp_queue.get())
+            pri, pkd_entry = temp_queue.get()
+            self.transmitting_queue.put(pkd_entry, priority=pri)
 
     def receive(self):
         """
