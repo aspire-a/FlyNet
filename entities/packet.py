@@ -94,17 +94,6 @@ class DataPacket(Packet):
         such as priority, category, processing time etc... using the probability distributions mentioned
         """
 
-        #----------------question 1------------------#
-        from utils.distributions import sample_packet_attributes
-        self.pkt_type, self.size_MB, self.priority = sample_packet_attributes()
-        # for later compute-queue modelling: service time (s)
-        self.cpu_cycles = self.size_MB * 8            # 8 “jobs” per MB ⇒ mean μ=8 #düz Service rate ile çarpabilirsmiin sor
-        self.expected_service = self.cpu_cycles / config.SERVICE_RATE
-
-
-
-
-
 
 class AckPacket(Packet):
     def __init__(self,

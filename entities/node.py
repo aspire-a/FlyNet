@@ -22,15 +22,6 @@ from utils import config
 from utils.util_function import has_intersection
 from phy.large_scale_fading import sinr_calculator
 
-
-#-------------question 2------------------#
-from utils import config
-import queue as pyqueue
-#-------------question 2 end-----------------#
-
-
-
-
 # config logging
 logging.basicConfig(filename='running_log.log',
                     filemode='w',  # there are two modes: 'a' and 'w'
@@ -124,19 +115,6 @@ class Node:
 
         self.inbox = inbox
 
-        #-----------------question 2------------------#
-        self.tx_queue     = pyqueue.PriorityQueue()      # items = (prio, t_arr, pkt)
-        self.max_queue_sz = config.BUFFER_SIZES[0]       # default, overwritten by runner
-        #-----------------question 2 end--------------#
-
-        #-----------------question 3------------------#
-        #compute queue
-        self.compute_rate   = config.SERVICE_RATE        # all equal; can randomise
-        self.cpu            = simpy.Resource(env, capacity=1)
-        self.arrivals_ewma  = 0.0                        # for ρ̂
-        self.alpha_ewma     = 0.02
-        # -----------------question 3 end------------------#
-
         self.buffer = simpy.Resource(env, capacity=1)
         self.max_queue_size = config.MAX_QUEUE_SIZE
 
@@ -168,12 +146,6 @@ class Node:
             self.env.process(self.feed_packet())
             self.env.process(self.energy_monitor())
             self.env.process(self.receive())
-
-            #-------------question 2------------------#
-            self.env.process(self._tx_queue_worker())
-            #-------------question 2 end-----------------#
-
-
         else: # drone features
             self.routing_protocol = Gpsr(self.simulator, self) # You can keep the routing protocol as is
             self.mobility_model = GaussMarkov3D(self)
@@ -184,86 +156,6 @@ class Node:
             self.env.process(self.feed_packet())
             self.env.process(self.energy_monitor())
             self.env.process(self.receive())
-
-
-    #-------------------question 2------------------#
-    def _enqueue_tx(self, pkt):
-        """Insert pkt into self.tx_queue respecting push-out rule."""
-        now = self.env.now
-        prio_tuple = (pkt.priority, now, pkt)
-
-        if self.tx_queue.qsize() < self.max_queue_sz:  # space free
-            self.tx_queue.put(prio_tuple)
-            return
-
-        # push-out: if queue full and *this* pkt is higher priority
-        worst = self.tx_queue.queue[-1]  # queue kept in sorted order (min-heap)
-        if pkt.priority < worst[0]:  # 0 < 1 < 2
-            self.tx_queue.get_nowait()  # drop lowest-prio
-            self.tx_queue.put(prio_tuple)
-            self.simulator.metrics.count('dropped_pushout')
-        else:  # drop incoming pkt
-            self.simulator.metrics.count('dropped_full')
-
-    def _tx_queue_worker(self):
-        """
-        Continuously pull from tx_queue and serve packet via buffer (link),
-        then dispatch to compute queue or offload decision.
-        """
-        while True:
-            if self.tx_queue.empty():
-                yield self.env.timeout(1e-6)  # 1 µs idle wait
-                continue
-
-            _, _, pkt = self.tx_queue.get()
-            with self.buffer.request() as req:
-                yield req
-
-                # simulate transmission time (size_MB / link_rate)
-                yield self.env.timeout(pkt.size_MB / config.SERVICE_RATE)
-
-                # hand to next stage: compute queue or offloading
-                self._handle_compute(pkt)
-
-    #--------------------question 2 end ----------------#
-
-    # --------------------question 3 -------------------#
-
-    def _handle_compute(self, pkt):
-        """
-        Decide local vs off-load:
-            Off-load if queue length > L_TH or utilisation ρ̂ > 0.85
-        """
-        # update EWMA arrival rate
-        self.arrivals_ewma = ((1-self.alpha_ewma) * self.arrivals_ewma
-                              + self.alpha_ewma)
-        rho_hat = self.arrivals_ewma / self.compute_rate
-        if (len(self.cpu.queue) > config.L_TH) or (rho_hat > config.RHO_MAX):
-            self._offload(pkt)
-            return
-
-        # --- local processing ---
-        self.env.process(self._local_compute(pkt))
-
-    def _local_compute(self, pkt):
-        with self.cpu.request() as creq:
-            yield creq
-            yield self.env.timeout(pkt.expected_service)
-            self.simulator.metrics.count('done_local')
-
-    # very simple “pick the strongest drone” off-loader
-    def _offload(self, pkt):
-        target = max(self.simulator.drones,
-                     key=lambda d: d.compute_rate)
-        if target is self:
-            # no better node; drop
-            self.simulator.metrics.count('dropped_offload_fail')
-            return
-        target._enqueue_tx(pkt)         # remote queue
-        self.simulator.metrics.count('offloaded')
-
-
-    # --------------------question 3 end ----------------#
 
 
     def generate_data_packet(self, traffic_pattern='Poisson'):
@@ -312,17 +204,10 @@ class Node:
                                  data_packet_id=GLOBAL_DATA_PACKET_ID,
                                  data_packet_length=config.DATA_PACKET_LENGTH,
                                  simulator=self.simulator)
-
                 pkd.transmission_mode = 0  # the default transmission mode of data packet is "unicast" (0)
+
                 self.simulator.metrics.datapacket_generated_num += 1
 
-                #-------------------question 2------------------#
-                self._enqueue_tx(pkd)
-                # Node.transmitting_queue.put(pkd)
-                continue        # skip legacy immediate-send logic we dont need the below
-                #-------------------question 2 end-----------------#
-
-                # noinspection PyUnreachableCode
                 logging.info('------> Sensor: %s generates a data packet (id: %s, dst: %s) at: %s, qsize is: %s',
                              self.identifier, pkd.packet_id, destination.identifier, self.env.now,
                              Node.transmitting_queue.qsize())

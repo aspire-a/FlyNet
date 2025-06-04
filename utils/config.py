@@ -3,30 +3,6 @@ from utils.ieee_802_11 import IEEE_802_11
 
 IEEE_802_11 = IEEE_802_11().b #You can choose a different version or leave it as it is.
 
-
-#--------------------question 1------------------#
-# traffic & service
-ARRIVAL_RATES = [2, 4, 6, 8]        # λ values (pkt s⁻¹)
-SERVICE_RATE  = 8                   # μ (jobs s⁻¹)
-
-# categorical probabilities
-PKT_TYPE_PMF  = ['text', 'image', 'video']
-PKT_TYPE_PROB = [0.60, 0.30, 0.10]
-
-# queue sizes for push-out
-BUFFER_SIZES  = [5, 10, float('inf')]
-
-# drop / off-load thresholds
-L_TH          = 5
-RHO_MAX       = 0.85
-
-# priority map (lower number = higher priority for PriorityQueue)
-PRIORITY_MAP  = {'video': 0, 'image': 1, 'text': 2}
-
-#---------------------- question 1 end ---------------------#
-
-
-
 # --------------------- simulation parameters --------------------- #
 MAP_LENGTH = 300  # m, length of the map
 MAP_WIDTH = 300  # m, width of the map
